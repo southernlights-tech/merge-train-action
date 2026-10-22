@@ -1,0 +1,133 @@
+#!/usr/bin/env bash
+# internal/mergetrain/testdata/fake-gh/gh
+#
+# Bash stub used by merge_train_e2e_test.go to drive the Dependabot merge
+# train end-to-end without hitting GitHub. Records every invocation as a
+# JSON object on a single line in $FAKE_GH_LOG, then reads a response from
+# $FAKE_GH_RESPONSES_FILE -- a JSON object whose keys are substrings
+# matched against the space-joined argv and whose values are either:
+#
+#   * a JSON quoted string        -- sent to stdout, exit 0
+#   * a JSON value (object/array) -- sent to stdout verbatim, exit 0
+#   * an object {"stdout":..,"stderr":..,"exit":N} -- structured response
+#
+# If no key matches, $FAKE_GH_DEFAULT_RESPONSE is used (default "{}").
+# Nothing else here is faithful to the real gh -- the goal is
+# deterministic, observable e2e coverage, not a faithful mock.
+set -euo pipefail
+
+: "${FAKE_GH_LOG:?FAKE_GH_LOG must point at a writable JSONL file}"
+: "${FAKE_GH_RESPONSES_FILE:?FAKE_GH_RESPONSES_FILE must point at a JSON map}"
+
+FAKE_GH_DEFAULT_RESPONSE="${FAKE_GH_DEFAULT_RESPONSE:-{}}"
+FAKE_GH_DEFAULT_EXIT="${FAKE_GH_DEFAULT_EXIT:-0}"
+
+# Flatten argv with spaces to produce `flat`, used only for substring
+# pattern matching against the response-map keys. gh arguments CAN
+# contain spaces (rebase-nudge bodies, ci-failed diagnostic bodies,
+# commit messages), and those embedded spaces are intact in $@ and
+# therefore in `flat` -- the join only collapses the boundaries
+# BETWEEN arguments. The log line below uses positional capture so
+# each original argument survives as a single element in the emitted
+# JSON argv array; `flat` is purely a substring-matching convenience.
+flat="$*"
+
+# Pick the longest matching key -- deterministic tie-breaker when two
+# patterns overlap. keys_unsorted preserves declaration order so we can
+# also fall back to that order if lengths tie.
+matched=""
+while IFS= read -r line; do
+  [[ -z "$line" ]] && continue
+  # line format: "<length> <key>"; strip the length prefix.
+  key="${line#* }"
+  if [[ "$flat" == *"$key"* ]]; then
+    matched="$key"
+    break
+  fi
+done < <(jq -r 'keys_unsorted[]' "$FAKE_GH_RESPONSES_FILE" \
+        | awk '{ printf "%d %s\n", length, $0 }' | sort -rn)
+
+stdout=""
+stderr=""
+exit_code="$FAKE_GH_DEFAULT_EXIT"
+raw=""
+if [[ -n "$matched" ]]; then
+  raw="$(jq --arg k "$matched" -r '.[$k]' "$FAKE_GH_RESPONSES_FILE")"
+fi
+if [[ -z "$raw" ]]; then
+  raw="$FAKE_GH_DEFAULT_RESPONSE"
+fi
+
+# Resolve response structure.
+case "${raw:0:1}" in
+  "{")
+    # Object: it is either the response body itself OR a structured
+    # {"stdout":..,"stderr":..,"exit":N} envelope. Distinguish by looking
+    # for either an explicit field or a non-zero exit; if neither, treat
+    # the whole object as stdout (typical e.g. {"merged":true,...}).
+    obj_stdout="$(printf '%s' "$raw" | jq -r '.stdout // empty')"
+    obj_stderr="$(printf '%s' "$raw" | jq -r '.stderr // empty')"
+    obj_exit="$(printf '%s' "$raw" | jq -r '.exit // 0')"
+    if [[ -n "$obj_stdout" ]] || [[ -n "$obj_stderr" ]] || [[ "$obj_exit" != "0" ]]; then
+      stdout="$obj_stdout"
+      stderr="$obj_stderr"
+      exit_code="$obj_exit"
+    else
+      stdout="$raw"
+    fi
+    ;;
+  "[")
+    # Bare JSON array (e.g. PR list, run list conclusions).
+    stdout="$raw"
+    ;;
+  *)
+    # Bare quoted scalar (jq -r stripped the JSON quotes).
+    stdout="$raw"
+    ;;
+esac
+
+# Apply `--jq <expr>` to the body before printing, mirroring real
+# `gh api … --jq …` post-processing. The previously raw fixture object
+# would otherwise arrive at the script unchanged, breaking callers
+# that expect `--jq '.check_runs // []'` to have extracted the
+# inner array. The expression is the very next argv token after
+# `--jq`. When no `--jq` is present (read-only gh calls like
+# `gh pr view --json …` feed the script the body directly), the
+# expression stays empty and stdout is printed as-is.
+jq_expr=""
+prev=""
+for tok in "$@"; do
+  if [[ "$prev" == "--jq" ]]; then
+    jq_expr="$tok"
+    break
+  fi
+  prev="$tok"
+done
+if [[ -n "$jq_expr" ]]; then
+  if filtered="$(jq -c "$jq_expr" <<<"$stdout" 2>/dev/null)"; then
+    stdout="$filtered"
+  fi
+fi
+
+# Log the call using POSITIONAL argv capture (jq --args / $ARGS.positional).
+# `flat="$*"` joined-and-then-resplit destroys single arguments whose
+# value contains whitespace -- exactly the shape of a `--body` value
+# carrying the rebase-nudge text or the failed-comment diagnostic. The
+# Go harness reads argv as []string and token-asserts against it; a
+# split body surfaces only the first word ("@dependabot"), making the
+# test assertions incorrect. Capturing the args verbatim through
+# `--args "$0" "$@"` keeps every multi-word argument as one element.
+{
+  jq -nc \
+    --arg matched "${matched:-}" \
+    --argjson exit "$exit_code" \
+    --args '{argv:$ARGS.positional, matched_pattern:(if $matched=="" then null else $matched end), exit:$exit}' \
+    -- "$0" "$@"
+} >> "$FAKE_GH_LOG"
+
+# Emit response.
+printf '%s' "$stdout"
+if [[ -n "$stderr" ]]; then
+  printf '%s' "$stderr" >&2
+fi
+exit "$exit_code"
