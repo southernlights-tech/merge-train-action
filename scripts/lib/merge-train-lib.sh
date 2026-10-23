@@ -102,6 +102,30 @@ cooldown_allows() {
   echo "allow"
 }
 
+# pr_age_minutes <created_at> <now_epoch>
+#   Whole minutes between <created_at> (GitHub's ISO-8601 UTC timestamp,
+#   e.g. 2020-01-01T00:00:00Z) and <now_epoch>. A timestamp that cannot be
+#   read yields 0, so the cooldown treats it as "just opened" -- an
+#   under-count, never an over-count.
+#
+#   The timestamp is parsed with jq's fromdateiso8601 rather than `date -d`.
+#   The -d flag exists only in GNU coreutils date; a BSD date (macOS)
+#   rejects it, which previously made every PR read as 0 minutes old and
+#   kept the FAILED path behind the cooldown. jq is already a hard
+#   dependency of the merge train, so this costs nothing.
+pr_age_minutes() {
+  local created_at="$1" now_epoch="$2" created_epoch=0
+  if [[ -n "$created_at" ]]; then
+    created_epoch="$(jq -rn --arg d "$created_at" '$d | fromdateiso8601' 2>/dev/null)" \
+      || created_epoch=0
+  fi
+  if ! [[ "$created_epoch" =~ ^[0-9]+$ ]] || (( created_epoch <= 0 )); then
+    echo 0
+    return
+  fi
+  echo $(( (now_epoch - created_epoch) / 60 ))
+}
+
 # rebase_marker <sha>
 #   Emit the literal marker we embed in an @dependabot rebase nudge so
 #   subsequent runs can detect an already-requested rebase for the same

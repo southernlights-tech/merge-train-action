@@ -183,6 +183,37 @@ func TestCooldownAllows(t *testing.T) {
 	}
 }
 
+// ----- pr_age_minutes ---------------------------------------------------
+
+// pr_age_minutes must read a GitHub timestamp the same way on every platform
+// the script runs on. An earlier implementation used `date -d`, which BSD
+// date (macOS) rejects, so every PR aged 0 minutes and the FAILED path never
+// cleared the cooldown.
+func TestPRAgeMinutes(t *testing.T) {
+	// 1700000000 == 2023-11-14T22:13:20Z.
+	cases := []struct {
+		name, createdAt, now, want string
+	}{
+		{"same instant", "2023-11-14T22:13:20Z", "1700000000", "0"},
+		{"two hours earlier", "2023-11-14T20:13:20Z", "1700000000", "120"},
+		{"sub-minute remainder truncated", "2023-11-14T22:11:21Z", "1700000000", "1"},
+		{"years old", "2020-01-01T00:00:00Z", "1700000000", "2036053"},
+		{"empty is treated as just opened", "", "1700000000", "0"},
+		{"unparseable is treated as just opened", "not-a-date", "1700000000", "0"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := runLib(t, "pr_age_minutes", []string{c.createdAt, c.now}, nil)
+			if err != nil {
+				t.Fatalf("pr_age_minutes(%q,%s) error: %v; output %q", c.createdAt, c.now, err, got)
+			}
+			if got != c.want {
+				t.Errorf("pr_age_minutes(%q,%s)=%q want %q", c.createdAt, c.now, got, c.want)
+			}
+		})
+	}
+}
+
 // ----- rebase_marker ----------------------------------------------------
 
 func TestRebaseMarker(t *testing.T) {

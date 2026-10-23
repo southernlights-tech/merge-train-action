@@ -92,21 +92,6 @@ mutating() {
   "$@"
 }
 
-# Whole minutes since the PR's createdAt. Returns 0 on parse failure so
-# the cooldown math treats an unparseable date as "just opened" (under-
-# counted, never over-aged).
-pr_age_minutes() {
-  local created_at="$1" created_epoch=0
-  if [[ -n "$created_at" ]]; then
-    created_epoch="$(date -d "$created_at" +%s 2>/dev/null || echo 0)"
-  fi
-  if (( created_epoch <= 0 )); then
-    echo 0
-    return
-  fi
-  echo $(( (NOW_EPOCH - created_epoch) / 60 ))
-}
-
 # Count failing GitHub Actions runs for the HEAD branch. Returns 0 if no
 # run history exists (or the query itself fails). Used only by the FAILED
 # path's strikes gate.
@@ -247,7 +232,7 @@ for ((i = 0; i < PR_COUNT; i++)); do
       continue
       ;;
     failed)
-      AGE_MIN="$(pr_age_minutes "$CREATED_AT")"
+      AGE_MIN="$(pr_age_minutes "$CREATED_AT" "$NOW_EPOCH")"
       FAIL_COUNT="$(failed_runs_on_branch "$HEAD_REF")"
       if [[ "$(cooldown_allows "$AGE_MIN" "$FAIL_COUNT" "$NOW_EPOCH")" == "deny" ]]; then
         DOUBLE_COOLDOWN=$(( FAIL_COOLDOWN_MINUTES * 2 ))
