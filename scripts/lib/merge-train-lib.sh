@@ -36,7 +36,11 @@ classify_check_runs() {
   # the function monotonically safe: an unexpected payload (e.g. an
   # error string returned by the upstream `gh api` invocation) will
   # always classify as "no signal", never as "green".
-  if ! jq -e 'type == "array"' <<<"$runs_json" >/dev/null 2>&1; then
+  # Require EXACTLY one JSON array. Slurping with -s turns N concatenated
+  # values into an N-element array, so a multi-value payload (e.g. two
+  # un-slurped `gh api --paginate` pages) fails this check and classifies as
+  # "no signal" -- it can never fall through to "green".
+  if ! jq -s -e 'length == 1 and (.[0] | type == "array")' <<<"$runs_json" >/dev/null 2>&1; then
     echo "none"
     return
   fi

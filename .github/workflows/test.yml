@@ -6,6 +6,10 @@ on:
     branches:
       - main
 
+permissions:
+  contents: read
+  pull-requests: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -22,3 +26,11 @@ jobs:
 
       - name: Lint shell scripts
         run: shellcheck scripts/dependabot-merge-train.sh scripts/lib/merge-train-lib.sh
+
+      - name: Smoke test the composite action (DRY_RUN)
+        uses: ./
+        with:
+          repo: ${{ github.repository }}
+          dry-run: "true"
+        env:
+          GH_TOKEN: ${{ github.token }}

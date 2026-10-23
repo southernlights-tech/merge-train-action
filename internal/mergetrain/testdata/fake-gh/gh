@@ -58,42 +58,8 @@ if [[ -z "$raw" ]]; then
   raw="$FAKE_GH_DEFAULT_RESPONSE"
 fi
 
-# Resolve response structure.
-case "${raw:0:1}" in
-  "{")
-    # Object: it is either the response body itself OR a structured
-    # {"stdout":..,"stderr":..,"exit":N} envelope. Distinguish by looking
-    # for either an explicit field or a non-zero exit; if neither, treat
-    # the whole object as stdout (typical e.g. {"merged":true,...}).
-    obj_stdout="$(printf '%s' "$raw" | jq -r '.stdout // empty')"
-    obj_stderr="$(printf '%s' "$raw" | jq -r '.stderr // empty')"
-    obj_exit="$(printf '%s' "$raw" | jq -r '.exit // 0')"
-    if [[ -n "$obj_stdout" ]] || [[ -n "$obj_stderr" ]] || [[ "$obj_exit" != "0" ]]; then
-      stdout="$obj_stdout"
-      stderr="$obj_stderr"
-      exit_code="$obj_exit"
-    else
-      stdout="$raw"
-    fi
-    ;;
-  "[")
-    # Bare JSON array (e.g. PR list, run list conclusions).
-    stdout="$raw"
-    ;;
-  *)
-    # Bare quoted scalar (jq -r stripped the JSON quotes).
-    stdout="$raw"
-    ;;
-esac
-
-# Apply `--jq <expr>` to the body before printing, mirroring real
-# `gh api … --jq …` post-processing. The previously raw fixture object
-# would otherwise arrive at the script unchanged, breaking callers
-# that expect `--jq '.check_runs // []'` to have extracted the
-# inner array. The expression is the very next argv token after
-# `--jq`. When no `--jq` is present (read-only gh calls like
-# `gh pr view --json …` feed the script the body directly), the
-# expression stays empty and stdout is printed as-is.
+# Extract the `--jq <expr>` post-processor up front: both the single-response
+# path and the multi-page path below apply it.
 jq_expr=""
 prev=""
 for tok in "$@"; do
@@ -103,9 +69,60 @@ for tok in "$@"; do
   fi
   prev="$tok"
 done
-if [[ -n "$jq_expr" ]]; then
-  if filtered="$(jq -c "$jq_expr" <<<"$stdout" 2>/dev/null)"; then
-    stdout="$filtered"
+
+# Multi-page simulation. `gh api --paginate --jq EXPR` applies EXPR to EACH page
+# and prints one result per page. A fixture of the form
+#   {"pages": [<page-body>, <page-body>, ...]}
+# reproduces that: every page is passed through the same --jq expression and the
+# results are emitted newline-separated.
+if [[ "${raw:0:1}" == "{" ]] && printf '%s' "$raw" | jq -e 'has("pages")' >/dev/null 2>&1; then
+  stdout=""
+  while IFS= read -r page; do
+    if [[ -n "$jq_expr" ]]; then
+      page_out="$(jq -c "$jq_expr" <<<"$page" 2>/dev/null || true)"
+    else
+      page_out="$page"
+    fi
+    if [[ -n "$stdout" ]]; then stdout+=$'\n'; fi
+    stdout+="$page_out"
+  done < <(printf '%s' "$raw" | jq -c '.pages[]')
+  stderr=""
+  exit_code="$FAKE_GH_DEFAULT_EXIT"
+else
+  # Resolve response structure.
+  case "${raw:0:1}" in
+    "{")
+      # Object: it is either the response body itself OR a structured
+      # {"stdout":..,"stderr":..,"exit":N} envelope. Distinguish by looking
+      # for either an explicit field or a non-zero exit; if neither, treat
+      # the whole object as stdout (typical e.g. {"merged":true,...}).
+      obj_stdout="$(printf '%s' "$raw" | jq -r '.stdout // empty')"
+      obj_stderr="$(printf '%s' "$raw" | jq -r '.stderr // empty')"
+      obj_exit="$(printf '%s' "$raw" | jq -r '.exit // 0')"
+      if [[ -n "$obj_stdout" ]] || [[ -n "$obj_stderr" ]] || [[ "$obj_exit" != "0" ]]; then
+        stdout="$obj_stdout"
+        stderr="$obj_stderr"
+        exit_code="$obj_exit"
+      else
+        stdout="$raw"
+      fi
+      ;;
+    "[")
+      # Bare JSON array (e.g. PR list, run list conclusions).
+      stdout="$raw"
+      ;;
+    *)
+      # Bare quoted scalar (jq -r stripped the JSON quotes).
+      stdout="$raw"
+      ;;
+  esac
+
+  # Apply `--jq <expr>` to the body, mirroring real `gh api … --jq …`
+  # post-processing.
+  if [[ -n "$jq_expr" ]]; then
+    if filtered="$(jq -c "$jq_expr" <<<"$stdout" 2>/dev/null)"; then
+      stdout="$filtered"
+    fi
   fi
 fi
 

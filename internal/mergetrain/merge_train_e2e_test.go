@@ -737,6 +737,39 @@ func TestE2EUpgradeLabeledSkipped(t *testing.T) {
 	_ = out
 }
 
+// A PR whose check-runs span more than one page must never be classified green.
+// `gh api --paginate --jq` emits one array per page; concatenated pages used to
+// mis-parse into a `green` decision, auto-approving and merging a PR that has
+// failures. Here page two carries the failure.
+func TestE2EMultiPageCheckRunsNeverGreen(t *testing.T) {
+	responses := `{
+    "pr list --repo": [
+      {"number":77,"title":"dep: bump multi","headRefName":"dependabot/multi","headRefOid":"sha077xxx","createdAt":"2020-01-01T00:00:00Z","labels":[],"isDraft":false}
+    ],
+    "mergeable,mergeStateStatus": {"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","reviewDecision":""},
+    "--paginate": {"pages":[
+      {"check_runs":[{"status":"completed","conclusion":"success"}]},
+      {"check_runs":[{"status":"completed","conclusion":"failure"}]}
+    ]},
+    "pulls/77/merge": {"merged":true,"sha":"sha077xxx"}
+  }`
+	s := newE2E(t, responses)
+	_, rc, out := s.run()
+	if rc != 0 {
+		t.Fatalf("script exit=%d want 0; output:\n%s", rc, out)
+	}
+	calls := readGhLog(t, s.logPath)
+	if c := findFirstCall(calls, "PUT", "pulls/77/merge"); c != nil {
+		t.Errorf("multi-page check-runs must not be merged; argv=%v", c.Argv)
+	}
+	for _, c := range calls {
+		if argvHasToken(c.Argv, "--approve") {
+			t.Errorf("multi-page check-runs must not be approved; argv=%v", c.Argv)
+		}
+	}
+	_ = out
+}
+
 // ----- helpers ----------------------------------------------------------
 
 func dumpCalls(calls []ghCall) string {

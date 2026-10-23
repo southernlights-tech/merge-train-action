@@ -40,8 +40,9 @@
 #   * a Dependabot github-actions PR whose title crosses a major version
 #     boundary is NEVER auto-merged. The train posts a review comment,
 #     adds $UPGRADE_REVIEW_LABEL, records the row and moves on; a labelled
-#     PR is skipped early on every later cycle. The train holds the PR
-#     indefinitely; a major bump merges only if a human does it manually.
+#     PR is skipped early on every later cycle. Removing the label does not
+#     re-admit the PR -- the next cycle re-flags it -- so a major bump merges
+#     only if a human does it manually.
 #
 # The pure decision helpers live in scripts/lib/merge-train-lib.sh so
 # each rule can be exercised through a fake-`gh` harness in Go.
@@ -214,8 +215,12 @@ for ((i = 0; i < PR_COUNT; i++)); do
 
   # ----- Inspect check-runs against HEAD_OID (per_page=100, paginated)
   echo "Checking CI for $HEAD_OID..."
+  # `gh api --paginate --jq` emits ONE array PER PAGE, so a PR with more than one
+  # page of check-runs would hand classify_check_runs a concatenated `[…][…]`
+  # payload instead of a single array -- which mis-parses. Slurp every page into
+  # one array before classifying.
   CHECKS_JSON="$(gh api "repos/$REPO/commits/$HEAD_OID/check-runs?per_page=100" \
-                   --paginate --jq '.check_runs // []')"
+                   --paginate --jq '.check_runs // []' | jq -s 'add // []')"
   CLASSIFICATION="$(classify_check_runs "$CHECKS_JSON")"
 
   case "$CLASSIFICATION" in
@@ -346,7 +351,7 @@ EOF
             && "$(is_major_bump "$TITLE")" == "yes" ]]; then
         UPGRADE_BODY="$(printf '%s\n\n%s\n\n%s' \
           "This PR is a **major** version bump of a GitHub Action, so the Dependabot merge train will not auto-merge it." \
-          "Actions do not guarantee SemVer, and a major bump can rename inputs/outputs or change defaults. A green CI run may not exercise the workflow that uses this action (build/deploy workflows run on push, not on PRs). Please review the action's release notes and merge this PR manually." \
+          "Actions do not guarantee SemVer, and a major bump can rename inputs/outputs or change defaults. A green CI run may not exercise the workflow that uses this action (build/deploy workflows run on push, not on PRs). Removing the \`$UPGRADE_REVIEW_LABEL\` label does not re-admit the PR -- the next cycle re-flags it. Review the action's release notes, then merge manually." \
           "Bump: \`$TITLE\`")"
         echo "Flagging #$NUMBER for human upgrade review..."
         mutating "post upgrade-review comment on #${NUMBER}" gh pr comment "$NUMBER" \
@@ -364,8 +369,12 @@ EOF
       # expansions); the closing " ... --body \"...\"" pattern is
       # identical to the two other --body sites above so a future
       # reader sees the same single-quoted-arg invariant everywhere.
-      echo "Approving #$NUMBER..."
-      if ! mutating "approve #${NUMBER}" gh pr review "$NUMBER" --repo "$REPO" \
+      # Skip the approve call when GitHub already reports the PR as approved, so a
+      # PR that is green but cannot yet merge (a blocking rule, a pending queue) is
+      # not re-approved on every cycle.
+      if [[ "$REVIEW" == "APPROVED" ]]; then
+        echo "Already approved (#$NUMBER); skipping the approve call."
+      elif ! mutating "approve #${NUMBER}" gh pr review "$NUMBER" --repo "$REPO" \
             --approve --body "All CI checks passed; auto-merge via merge train."; then
         echo "::warning::approve failed for #$NUMBER; ending this cycle, next cycle will retry"
         echo "WARNING: decision=approve pr=$NUMBER" >&2
@@ -412,9 +421,17 @@ EOF
       fi
 
       MERGES_DONE=$((MERGES_DONE + 1))
-      record_summary "$NUMBER" "$TITLE" "merged" \
-        "squash-merged by merge train (sha=$HEAD_OID)"
-      echo "Merged #$NUMBER (count: $MERGES_DONE/$MAX_MERGES_PER_RUN)"
+      # In DRY_RUN the merge PUT above is skipped, so report the decision honestly
+      # as `would-merge` rather than claiming a merge that never happened.
+      if (( DRY_RUN_ENABLED )); then
+        record_summary "$NUMBER" "$TITLE" "would-merge" \
+          "DRY_RUN: merge PUT skipped (sha=$HEAD_OID)"
+        echo "DRY_RUN: would merge #$NUMBER (count: $MERGES_DONE/$MAX_MERGES_PER_RUN)"
+      else
+        record_summary "$NUMBER" "$TITLE" "merged" \
+          "squash-merged by merge train (sha=$HEAD_OID)"
+        echo "Merged #$NUMBER (count: $MERGES_DONE/$MAX_MERGES_PER_RUN)"
+      fi
       echo "::endgroup::"
       ;;
   esac

@@ -270,3 +270,17 @@ func TestIsMajorBump(t *testing.T) {
 		})
 	}
 }
+
+// ----- classify_check_runs: multi-value fail-closed ---------------------
+
+// Two concatenated arrays (what an un-slurped `gh api --paginate --jq` produces
+// for a multi-page response) must never classify as green -- that was a
+// fail-open: a PR with more than one page of check-runs could be auto-merged
+// despite failures.
+func TestClassifyCheckRunsMultiValueFailsClosed(t *testing.T) {
+	in := `[{"status":"completed","conclusion":"success"}][{"status":"completed","conclusion":"failure"}]`
+	got, _ := runLib(t, "classify_check_runs", []string{in}, nil)
+	if got != "none" {
+		t.Errorf("classify_check_runs(multi-value)=%q want none (fail closed, never green)", got)
+	}
+}
