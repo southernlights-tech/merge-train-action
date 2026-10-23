@@ -1,0 +1,51 @@
+name: Dependabot Merge Train
+description: >-
+  Drives a one-merge-per-cycle train over open Dependabot PRs: approves and
+  SHA-pinned squash-merges green PRs, quarantines failing ones, requests a
+  rebase on conflicts, and withholds auto-merge from major GitHub Actions
+  bumps for human review. Runs inside the caller's job (composite action).
+author: southernlights.tech
+
+inputs:
+  repo:
+    description: "owner/name of the repository whose Dependabot PRs to process."
+    required: true
+  max-merges-per-run:
+    description: "Maximum merges per cycle."
+    required: false
+    default: "1"
+  fail-cooldown-minutes:
+    description: "Minutes a failing PR must age before it is quarantined."
+    required: false
+    default: "120"
+  min-failed-runs:
+    description: "Failed Actions runs required on the head branch before quarantining."
+    required: false
+    default: "2"
+  ci-failed-label:
+    description: "Label applied to PRs quarantined for failing checks."
+    required: false
+    default: "ci-failed"
+  upgrade-review-label:
+    description: "Label applied to major GitHub Actions bumps withheld for human review."
+    required: false
+    default: "needs-upgrade-review"
+  dry-run:
+    description: "When true, log decisions without approving, commenting, labelling or merging."
+    required: false
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - name: Run merge train
+      shell: bash
+      env:
+        REPO: ${{ inputs.repo }}
+        MAX_MERGES_PER_RUN: ${{ inputs.max-merges-per-run }}
+        FAIL_COOLDOWN_MINUTES: ${{ inputs.fail-cooldown-minutes }}
+        MIN_FAILED_RUNS: ${{ inputs.min-failed-runs }}
+        CI_FAILED_LABEL: ${{ inputs.ci-failed-label }}
+        UPGRADE_REVIEW_LABEL: ${{ inputs.upgrade-review-label }}
+        DRY_RUN: ${{ inputs.dry-run }}
+      run: bash "${{ github.action_path }}/scripts/dependabot-merge-train.sh"

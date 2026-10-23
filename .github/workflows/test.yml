@@ -1,0 +1,36 @@
+name: Test
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - run: go vet ./...
+
+      - run: go test ./...
+
+      - name: Lint shell scripts
+        run: shellcheck scripts/dependabot-merge-train.sh scripts/lib/merge-train-lib.sh
+
+      - name: Smoke test the composite action (DRY_RUN)
+        uses: ./
+        with:
+          repo: ${{ github.repository }}
+          dry-run: "true"
+        env:
+          GH_TOKEN: ${{ github.token }}
